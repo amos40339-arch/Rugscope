@@ -14,55 +14,45 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "RugScope: Intent Intelligence Active", 200
+    return "RugScope: Strategic Intelligence Active", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# --- THE STRATEGIC BRAIN ---
+# --- THE OPERATOR BRAIN ---
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text.strip()
     
-    # 1. Natural Onboarding
     if user_text.lower() in ['hello', 'hi', 'hey', 'start']:
-        await update.message.reply_text(
-            "🎯 RugScope Strategic Intelligence Active.\n\n"
-            "I don't use commands. Just talk to me like an operator. I can:\n"
-            "• Audit AMA transcripts for lies.\n"
-            "• Grill founders on their business models.\n"
-            "• Scan for crypto rugs and social engineering.\n"
-            "• Advise on general business strategy.\n\n"
-            "What's on the table today?"
-        )
+        await update.message.reply_text("🎯 RugScope Active. Strategic partner mode engaged. Feed me data.")
         return
 
-    status_msg = await update.message.reply_text("🕵️ RugScope is calculating strategy...")
+    status_msg = await update.message.reply_text("🕵️ RugScope is calculating...")
 
     try:
-        # STEP 2: INTENT DETECTION
-        # The AI decides the "Mode" based on the user's natural language.
+        # STEP 1: INTENT DETECTION
         intent_check = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Classify this into: CRYPTO_AUDIT, BIZ_STRATEGY, or FOUNDER_PREP. Return only the word."},
+                {"role": "system", "content": "Classify: CRYPTO_AUDIT, BIZ_STRATEGY, or FOUNDER_PREP. Return only the word."},
                 {"role": "user", "content": user_text}
             ]
         )
         intent = intent_check.choices[0].message.content.strip()
 
-        # STEP 3: ROLE-PLAYING THE OPERATOR
+        # STEP 2: RUTHLESS PROMPT ENGINEERING
         if "BIZ_STRATEGY" in intent:
-            role = "You are a brutal Business Consultant. Find the flaws in this business idea. Be ruthless. Plain text, no stars."
+            role = "You are a brutal Business Strategist. Tear this idea apart. Find where it loses money. Be blunt. Use plain text, NO STARS."
         elif "CRYPTO_AUDIT" in intent:
-            role = "You are a cynical crypto forensic auditor. Audit this for rugs, avoided questions in AMAs, and scams. Plain text, no stars."
+            role = "You are a cynical forensic auditor. This is a scam audit. Give a 'Danger Level' out of 10. List 3 red flags. Be ruthless. Use plain text, NO STARS."
         elif "FOUNDER_PREP" in intent:
-            role = "You are a ruthless Tier-1 VC Shark. Grill the user on their project. Ask 3 lethal questions. Plain text, no stars."
+            role = "You are a ruthless VC Investor. Grill the founder. Ask 3 questions that would expose a weak business model. Use plain text, NO STARS."
         else:
-            role = "You are an elite Strategic Partner. Give a blunt, operator-level response. Plain text, no stars."
+            role = "You are an elite Strategic Partner. Give an aggressive, high-level execution response. Use plain text, NO STARS."
 
-        # STEP 4: GENERATE FINAL RESPONSE
+        # STEP 3: EXECUTION
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
@@ -71,13 +61,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         )
 
+        # Remove all formatting stars for a clean look
         final_output = response.choices[0].message.content.replace("*", "")
         await status_msg.edit_text(final_output)
 
     except Exception as e:
         await status_msg.edit_text(f"⚠️ Fault: {e}")
 
-# --- AUDIO HANDLER ---
+# --- AUDIO FORENSICS ---
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("📥 Processing audio forensics...")
     file = await context.bot.get_file(update.message.voice.file_id)
@@ -91,7 +82,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     audit = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[{"role": "system", "content": "Analyze this transcript for crypto/business fraud. Be ruthless. No stars."},
+        messages=[{"role": "system", "content": "Analyze transcript for fraud. Be ruthless. Plain text, no stars."},
                   {"role": "user", "content": transcript.text}]
     )
     clean_audio = audit.choices[0].message.content.replace("*", "")
@@ -100,9 +91,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
     bot_app = ApplicationBuilder().token(TOKEN).build()
-    
-    # Listen to everything
     bot_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     bot_app.add_handler(MessageHandler(filters.VOICE, handle_audio))
-    
     bot_app.run_polling()
