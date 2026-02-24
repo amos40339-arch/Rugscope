@@ -4,4 +4,3 @@ flask
 pydub
 requests
 gunicorn
-audioop-lts
