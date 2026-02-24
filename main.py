@@ -4,49 +4,46 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from groq import Groq
 
-# --- CONFIG & TOKENS ---
+# --- CONFIG ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
 client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 memory = collections.defaultdict(lambda: [])
 
-# --- RENDER HEALTH CHECK (FLASK) ---
 app = Flask(__name__)
-
 @app.route('/')
-def health_check():
-    return "RugScope Master: Live", 200
+def health(): return "RugScope Live", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- FORENSIC TOOLS (DEXSCREENER ENGINE) ---
+# --- THE DATA ENGINE ---
 def get_dex_data(address):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        # Hardened headers to look like a real browser
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
         url = f"https://api.dexscreener.com/latest/dex/tokens/{address}"
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get(url, headers=headers, timeout=8)
         
         if response.status_code == 200:
-            data = response.json()
-            pairs = data.get('pairs')
-            if pairs:
-                # Get the most liquid pair to avoid fake low-cap pools
-                pair = sorted(pairs, key=lambda x: x.get('liquidity', {}).get('usd', 0), reverse=True)[0]
-                
-                # Extracting Identity Data
-                base_token = pair.get("baseToken", {})
+            res_data = response.json()
+            pairs = res_data.get('pairs')
+            if pairs and len(pairs) > 0:
+                # Get the most liquid pair
+                p = sorted(pairs, key=lambda x: x.get('liquidity', {}).get('usd', 0), reverse=True)[0]
+                base = p.get("baseToken", {})
                 return {
-                    "name": base_token.get("name", "Unknown Project"),
-                    "symbol": base_token.get("symbol", "UNKNOWN"),
-                    "price": pair.get("priceUsd", "0"),
-                    "liq": pair.get("liquidity", {}).get("usd", 0),
-                    "mcap": pair.get("fdv", 0)
+                    "name": base.get("name", "Unknown"),
+                    "symbol": base.get("symbol", "???"),
+                    "price": p.get("priceUsd", "0"),
+                    "liq": p.get("liquidity", {}).get("usd", 0),
+                    "mcap": p.get("fdv", 0)
                 }
     except Exception as e:
-        print(f"Scraper Error: {e}")
+        print(f"Fetch Error: {e}")
     return None
 
 def detect_chain(text):
@@ -54,79 +51,50 @@ def detect_chain(text):
     if re.search(r'[1-9A-HJ-NP-Za-km-z]{32,44}', text): return "SOLANA"
     return None
 
-# --- BOT LOGIC ---
+# --- THE BRAIN ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
-    
     user_id = update.effective_user.id
     user_text = update.message.text.strip()
     
-    # 1. Management Commands
-    if user_text.lower() in ['/start', 'hi', 'hello']:
-        memory[user_id] = []
-        await update.message.reply_text("🎯 RugScope Active. Paste a CA for a forensic audit or pitch me a play.")
-        return
-
-    # 2. Chain & Data Fetching
     chain = detect_chain(user_text)
     data = get_dex_data(user_text) if chain else None
 
-    # 3. Decision Logic
+    # SYSTEM PROMPT INJECTION
     if chain and data:
-        # We inject the NAME and SYMBOL into the brain
-        id_str = f"TARGET: {data['name']} ({data['symbol']})"
-        stats_str = f"PRICE: ${data['price']} | LIQUIDITY: ${data['liq']:,} | MCAP: ${data['mcap']:,}"
-        
-        system_prompt = (
-            f"You are RugScope, a cynical forensic auditor. {id_str}. {stats_str}. "
-            "INSTRUCTIONS: \n"
-            "1. Start by identifying the coin by NAME and SYMBOL.\n"
-            "2. Give a blunt BUY, SELL, or AVOID verdict.\n"
-            "3. If Liquidity is less than 5% of MCAP, call it a RUG.\n"
-            "4. Be aggressive and concise. No stars. No fluff."
+        # DATA FOUND: Force the AI to use it
+        context_data = f"COIN: {data['name']} ({data['symbol']}) | MCAP: ${data['mcap']:,} | LIQ: ${data['liq']:,} | PRICE: ${data['price']}"
+        system_msg = (
+            f"You are RugScope, a ruthless auditor. TARGET IDENTIFIED: {context_data}. "
+            "1. Lead with the Name and Symbol. "
+            "2. Give a blunt BUY/SELL/AVOID verdict. "
+            "3. If Liq < 10% of MCAP, call it a dangerous RUG. "
+            "Be aggressive. No fluff. No stars."
         )
     elif chain and not data:
-        system_prompt = (
-            f"The user sent a {chain} address, but DexScreener shows NO data. "
-            "Verdict: AVOID. Tell the user this is either a stealth rug or a ghost coin. "
-            "Do not be polite. No stars."
-        )
+        # CA SENT BUT NO DATA: No guessing allowed
+        system_msg = "The user sent a CA but DexScreener has no data. This is a GHOST project or a fresh scam. Tell them to AVOID and don't make up numbers."
     else:
-        system_prompt = "You are RugScope, an operator's mentor. Roast lazy thinking. Give practical business/trading advice. No stars."
+        # NORMAL CHAT
+        system_msg = "You are RugScope, a cynical mentor. Roast lazy thinking. Be blunt. No stars."
 
-    # 4. API Execution
     try:
-        messages = [{"role": "system", "content": system_prompt}]
-        for entry in memory[user_id][-4:]: messages.append(entry)
-        messages.append({"role": "user", "content": user_text})
+        msgs = [{"role": "system", "content": system_msg}]
+        for m in memory[user_id][-4:]: msgs.append(m)
+        msgs.append({"role": "user", "content": user_text})
 
-        chat = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            temperature=0.1 # Absolute precision, no "creative" guessing
-        )
+        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=msgs, temperature=0.1)
+        final_text = res.choices[0].message.content.replace("*", "")
         
-        response = chat.choices[0].message.content.replace("*", "")
         memory[user_id].append({"role": "user", "content": user_text})
-        memory[user_id].append({"role": "assistant", "content": response})
-        
-        await update.message.reply_text(response)
+        memory[user_id].append({"role": "assistant", "content": final_text})
+        await update.message.reply_text(final_text)
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Brain Fault: {str(e)}")
+        await update.message.reply_text(f"⚠️ Error: {e}")
 
-# --- MAIN RUNTIME ---
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
-    
-    if not TOKEN:
-        print("CRITICAL: TELEGRAM_TOKEN missing.")
-        exit(1)
-
-    try:
-        app_bot = ApplicationBuilder().token(TOKEN).build()
-        app_bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-        print("--- RUGSCOPE OPERATIONAL: IDENTITY MODE ---")
-        app_bot.run_polling(drop_pending_updates=True)
-    except Exception as e:
-        print(f"CRITICAL ERROR: {e}")
-        
+    bot = ApplicationBuilder().token(TOKEN).build()
+    bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    print("--- RUGSCOPE 2.2 ONLINE ---")
+    bot.run_polling(drop_pending_updates=True)
