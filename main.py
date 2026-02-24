@@ -1,6 +1,6 @@
 import os, threading, requests
 from flask import Flask
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from groq import Groq
 from pydub import AudioSegment
@@ -15,46 +15,55 @@ app = Flask(__name__)
 # --- WEB SERVER (Keep-Alive) ---
 @app.route('/')
 def home():
-    return "ChainVigil Status: Operational", 200
+    return "RugScope Status: Operational", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# --- ERROR HANDLER (Fixes the Red Lines) ---
+# --- AUTO-SET COMMANDS ---
+async def post_init(application):
+    """Sets the /news command in the Telegram menu automatically."""
+    commands = [BotCommand("news", "Get real-time market impact reports")]
+    await application.bot.set_my_commands(commands)
+
+# --- ERROR HANDLER ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"⚠️ Operational Error: {context.error}")
 
 # --- BOT LOGIC ---
 async def onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "🛡️ **ChainVigil Intelligence Active**\n\n"
-        "I don't need commands. Just send me:\n"
-        "• **Chat Logs** to audit for scams.\n"
-        "• **Voice Notes** for audio-based fraud detection.\n\n"
-        "Type **/news** for market impact analysis."
+        "🎯 **RugScope Intelligence: Target Locked**\n\n"
+        "I am your forensic filter for crypto fraud. I don't need commands; I need data. Send me:\n\n"
+        "🛡️ **Chat Logs:** Audit project shills for 'rug' DNA.\n"
+        "🎙️ **Voice Notes:** Scan dev audio for deceptive marketing.\n"
+        "📰 **/news:** Get real-time market impact reports.\n\n"
+        "*Security is the only priority. Send a message to begin.*"
     )
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
+    user_text = update.message.text.strip()
     
-    # Check if they just said hello/hi/hey
-    if user_text.lower() in ['hello', 'hi', 'hey', 'start']:
+    # Trigger onboarding for greetings
+    if user_text.lower() in ['hello', 'hi', 'hey', 'start', '/start']:
         await onboarding(update, context)
         return
 
-    # Otherwise, treat it as a Crypto Audit
+    # Treat everything else as an Audit
+    await update.message.reply_text("🕵️ **RugScope is analyzing intelligence...**")
+    
     response = client.chat.completions.create(
         model="llama3-70b-8192",
-        messages=[{"role": "system", "content": "You are a blunt crypto security auditor. Audit this text for rugs, scams, and deceptive marketing."},
+        messages=[{"role": "system", "content": "You are RugScope, a cynical crypto auditor. Audit this text for rugs, scams, and deceptive marketing. Be blunt."},
                   {"role": "user", "content": user_text}],
         temperature=0.1
     )
     await update.message.reply_text(f"🔍 **Audit Report:**\n\n{response.choices[0].message.content}")
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📥 Processing audio intelligence...")
+    await update.message.reply_text("📥 **Processing audio intelligence...**")
     file = await context.bot.get_file(update.message.voice.file_id)
     await file.download_to_drive("voice.ogg")
     
@@ -66,7 +75,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     audit = client.chat.completions.create(
         model="llama3-70b-8192",
-        messages=[{"role": "system", "content": "Analyze this transcript for crypto fraud."},
+        messages=[{"role": "system", "content": "Analyze this transcript for crypto fraud. Be ruthless."},
                   {"role": "user", "content": transcript.text}]
     )
     await update.message.reply_text(f"🎙️ **Transcript:** {transcript.text}\n\n⚖️ **Verdict:** {audit.choices[0].message.content}")
@@ -76,22 +85,21 @@ async def get_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     latest = res['Data'][0]
     analysis = client.chat.completions.create(
         model="llama-3.1-8b-instant",
-        messages=[{"role": "system", "content": "Market impact analysis: Bullish or Bearish?"},
+        messages=[{"role": "system", "content": "Market impact analysis: Bullish or Bearish? Why?"},
                   {"role": "user", "content": latest['title']}]
     )
-    await update.message.reply_text(f"📰 {latest['title']}\n\n📊 **Impact:** {analysis.choices[0].message.content}")
+    await update.message.reply_text(f"📰 **Latest News:** {latest['title']}\n\n📊 **Impact:** {analysis.choices[0].message.content}")
 
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
     
-    bot_app = ApplicationBuilder().token(TOKEN).build()
+    bot_app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     
-    # Handlers
     bot_app.add_error_handler(error_handler)
     bot_app.add_handler(CommandHandler("news", get_news))
-    bot_app.add_handler(CommandHandler("start", onboarding)) # Keep /start just in case
+    bot_app.add_handler(CommandHandler("start", onboarding))
     bot_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     bot_app.add_handler(MessageHandler(filters.VOICE, handle_audio))
     
-    print("ChainVigil Core Engaged.")
+    print("RugScope Core Engaged.")
     bot_app.run_polling()
