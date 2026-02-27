@@ -1,4 +1,5 @@
-python-telegram-bot
-httpx
-flask
-gunicorn
+python-telegram-bot==21.6
+httpx==0.27.2
+groq==0.11.0
+flask==3.0.3
+gunicorn==22.0.0
