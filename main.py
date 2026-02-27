@@ -65,7 +65,6 @@ SOLANA_PATTERN = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
 
 def detect_ca(text: str) -> Optional[str]:
-    """Return the CA if the message looks like a contract address, else None."""
     token = text.strip()
     if EVM_PATTERN.match(token) or SOLANA_PATTERN.match(token):
         return token
@@ -113,20 +112,44 @@ async def fetch_token_data(ca: str) -> dict:
 
 
 # ─────────────────────────────────────────────
-# GROQ — LLM
+# GROQ — SYSTEM PROMPT (FIX 2 + FIX 3)
 # ─────────────────────────────────────────────
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-SENTINEL_SYSTEM_PROMPT = """You are Sentinel. A cold, forensic, ruthless capital auditor.
-You do not encourage. You do not comfort. You identify risk, logic leaks, and execution failure points.
+SENTINEL_SYSTEM_PROMPT = """You are Sentinel. A cold, forensic, elite capital auditor with 20 years of experience in both TradFi and DeFi.
+You operate with surgical precision. You do not encourage blindly. You do not comfort. You call what you see — good or bad.
 
 STRICT OUTPUT RULES:
 - No asterisks. No stars. No markdown bolding. No bullet symbols that use *.
 - Use plain text only. Use dashes (-) for lists if needed.
 - Be blunt, direct, and calculated. Every sentence must earn its place.
-- Never use filler phrases like "Great question" or "Certainly".
+- Never use filler phrases like "Great question" or "Certainly" or "Of course".
+- Always use elite industry terminology in your analysis. Required terms include:
+  Capital Evaporation Risk, Neural Sentiment Gap, Liquidity Compression Zone,
+  Asymmetric Execution Risk, Structural Alpha Decay, Holder Conviction Index,
+  Velocity-to-Liquidity Ratio, Demand Absorption Rate, Exit Liquidity Concentration,
+  Principal Preservation Threshold.
 
-For CRYPTO audits, your output MUST include these exact labeled sections:
+---
+
+INPUT TYPE 1 — CRYPTO CONTRACT ADDRESS AUDIT:
+
+Use this SENTINEL SCORE scale. You MUST score based on the actual liquidity and volume data provided.
+Do NOT default to 40. Do NOT give the same score to every token. Read the numbers and score accordingly.
+
+0-30: RUG ZONE — Liquidity below $10k. Capital evaporation is near-certain. Exit liquidity does not exist.
+31-60: HIGH RISK — New launch or liquidity under $100k. Asymmetric execution risk is elevated. Speculation only.
+61-85: SOLID — Liquidity above $100k with consistent volume. Structural alpha is present. Calculated entry possible.
+86-100: ELITE — Blue chip on-chain metrics. High holder conviction index. Principal preservation threshold is favorable.
+
+Your EXECUTION VERDICT MUST reflect the score:
+- Score 0-30: VERDICT must be AVOID
+- Score 31-60: VERDICT must be WATCH or AVOID depending on volume trend
+- Score 61-85: VERDICT must be WATCH or BUY depending on momentum
+- Score 86-100: VERDICT must be BUY
+
+Your crypto audit output MUST follow this exact structure:
+
 TOKEN NAME:
 CONTRACT:
 CHAIN:
@@ -137,25 +160,51 @@ LIQUIDITY USD:
 CHART: [link]
 
 SENTINEL SCORE: [0-100]
-Score logic — deduct points ruthlessly for: low liquidity (<$50k = -30), no volume, anonymous team, no utility, high FDV/MC ratio, recent deployment, concentrated wallets.
 
-RISK PROFILE: [brief forensic breakdown of capital risk]
+RISK PROFILE:
+[Forensic breakdown using elite terminology. Assess capital evaporation risk,
+velocity-to-liquidity ratio, demand absorption rate, and exit liquidity concentration.]
 
-EXECUTION VERDICT: [BUY / AVOID / WATCH]
-VERDICT REASON: [one ruthless sentence explaining the verdict]
+EXECUTION VERDICT: [BUY / WATCH / AVOID]
+VERDICT REASON: [One ruthless, data-driven sentence.]
 
-For BUSINESS or IDEA audits, your output MUST include:
+---
+
+INPUT TYPE 2 — BUSINESS IDEA OR STRATEGY AUDIT:
+
+Do NOT use crypto scoring metrics here. Do NOT output a Sentinel Score.
+Provide a ruthless ROI and leverage analysis only.
+
+Your business audit output MUST follow this exact structure:
+
 AUDIT:
-ROI POTENTIAL: [High/Medium/Low + why]
-LEVERAGE SCORE: [0-100]
-LOGIC LEAKS: [what will kill this idea]
-EXECUTION PATH: [what would actually make this work, if anything]
+[Blunt assessment of the idea's core premise and market reality.]
 
-For GREETINGS or GENERAL inputs, respond in character as Sentinel. Cold, brief, purposeful."""
+ROI POTENTIAL: [High / Medium / Low]
+[Explain why using structural and market analysis. Reference neural sentiment gap or asymmetric execution risk where relevant.]
+
+LEVERAGE SCORE: [0-100]
+[How much output does this idea produce per unit of input capital and effort.]
+
+LOGIC LEAKS:
+[What will kill this idea. Be specific.]
+
+EXECUTION PATH:
+[What would actually make this work. The minimum viable action sequence.]
+
+---
+
+INPUT TYPE 3 — GREETING OR GENERAL MESSAGE:
+
+Respond in character as Sentinel. Cold, brief, and purposeful.
+Introduce your two core capabilities: crypto forensic auditing and business strategy auditing.
+Do not be warm. Do not be robotic. Be elite."""
 
 
 def build_crypto_prompt(token: dict) -> str:
-    return f"""Audit this token. No mercy.
+    return f"""Audit this token. Your score MUST reflect the actual liquidity and volume figures below.
+If liquidity is above $100k, score above 60. If liquidity is above $500k with strong volume, score above 80.
+Do not default to a middle score. Read the data and respond accordingly.
 
 Token Name: {token['name']} ({token['symbol']})
 Contract: {token['ca']}
@@ -167,11 +216,14 @@ FDV: {token['fdv']}
 24H Price Change: {token['price_change_24h']}%
 Chart: {token['chart_url']}
 
-Produce your full forensic audit now."""
+Produce your full forensic audit now. No mercy. No defaults."""
 
 
+# ─────────────────────────────────────────────
+# GROQ — LLM
+# ─────────────────────────────────────────────
 async def query_groq(prompt: str) -> str:
-    """Non-blocking Groq call wrapped in a thread executor."""
+    """Non-blocking Groq LLM call wrapped in executor."""
     import asyncio
 
     loop = asyncio.get_running_loop()
@@ -184,7 +236,7 @@ async def query_groq(prompt: str) -> str:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.4,
-            max_tokens=1024,
+            max_tokens=1200,
         )
         return completion.choices[0].message.content.strip()
 
@@ -193,10 +245,13 @@ async def query_groq(prompt: str) -> str:
 
 
 # ─────────────────────────────────────────────
-# GROQ — WHISPER TRANSCRIPTION
+# GROQ — WHISPER TRANSCRIPTION (FIX 1)
 # ─────────────────────────────────────────────
 async def transcribe_audio(file_path: str) -> str:
-    """Transcribe an audio file using Groq Whisper."""
+    """
+    Transcribe audio using Groq Whisper large-v3.
+    Prompt guides Whisper to recognize crypto and business terminology.
+    """
     import asyncio
 
     loop = asyncio.get_running_loop()
@@ -204,11 +259,20 @@ async def transcribe_audio(file_path: str) -> str:
     def _sync_transcribe():
         with open(file_path, "rb") as audio_file:
             transcription = groq_client.audio.transcriptions.create(
-                model=WHISPER_MODEL,
+                model="whisper-large-v3",
                 file=audio_file,
                 response_format="text",
+                prompt=(
+                    "The audio is a forensic crypto audit or business strategy discussion. "
+                    "Key terms may include: Liquidity, Contract Address, DexScreener, "
+                    "Market Cap, FDV, Token, Solana, Ethereum, Base, ROI, leverage, capital risk, "
+                    "wallet, rugpull, holder, volume, price change."
+                ),
             )
-        return transcription.strip()
+        # Groq returns a plain string when response_format is "text"
+        if isinstance(transcription, str):
+            return transcription.strip()
+        return transcription.text.strip()
 
     result = await loop.run_in_executor(None, _sync_transcribe)
     return result
@@ -219,10 +283,11 @@ async def transcribe_audio(file_path: str) -> str:
 # ─────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Sentinel online.\n\nSend a contract address (CA) for a crypto forensic audit.\n"
-        "Send a business idea for a capital efficiency audit.\n"
+        "Sentinel online.\n\n"
+        "Send a contract address (CA) for a forensic crypto audit.\n"
+        "Send a business idea for a capital efficiency and logic leak analysis.\n"
         "Send a voice note. I will transcribe and audit it.\n\n"
-        "There is no small talk here."
+        "There is no small talk here. Only data."
     )
 
 
@@ -238,6 +303,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ca = detect_ca(user_input)
 
         if ca:
+            # ── CRYPTO PATH ──
             try:
                 token_data = await fetch_token_data(ca)
             except httpx.HTTPStatusError as e:
@@ -256,7 +322,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             prompt = build_crypto_prompt(token_data)
+
         else:
+            # ── BUSINESS / GREETING PATH ──
             prompt = user_input
 
         response = await query_groq(prompt)
@@ -264,14 +332,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Unhandled error in handle_text: {e}", exc_info=True)
-        await update.message.reply_text(
-            f"Audit failed. Error: {str(e)}"
-        )
+        await update.message.reply_text(f"Audit failed. Error: {str(e)}")
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Voice note from {update.effective_user.id}")
-    await update.message.reply_text("Voice note received. Transcribing via Whisper.")
+    await update.message.reply_text("Voice note received. Engaging Whisper transcription layer.")
 
     tmp_path = None
 
@@ -279,22 +345,31 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         voice = update.message.voice
         tg_file = await context.bot.get_file(voice.file_id)
 
+        # FIX 1: Named temp file written to disk before transcription
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             tmp_path = tmp.name
 
         await tg_file.download_to_drive(tmp_path)
-        logger.info(f"Voice file saved to {tmp_path}")
+        logger.info(f"Voice file downloaded: {tmp_path} | Size: {os.path.getsize(tmp_path)} bytes")
 
-        transcript = await transcribe_audio(tmp_path)
-
-        if not transcript:
+        if os.path.getsize(tmp_path) == 0:
             await update.message.reply_text(
-                "Whisper returned an empty transcription. Audio may be silent or corrupted."
+                "Audio file arrived empty. Telegram may have sent a corrupt packet. Re-record and retry."
             )
             return
 
-        await update.message.reply_text(f"Transcription:\n\n{transcript}\n\nAuditing now.")
+        transcript = await transcribe_audio(tmp_path)
+        logger.info(f"Transcript result: {transcript[:120]}")
 
+        if not transcript:
+            await update.message.reply_text(
+                "Whisper returned an empty transcription. Audio may be silent or too short to process."
+            )
+            return
+
+        await update.message.reply_text(f"Transcription complete:\n\n{transcript}\n\nInitiating audit.")
+
+        # Route transcript through the same dual-path logic as text input
         ca = detect_ca(transcript)
         if ca:
             try:
@@ -311,13 +386,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Unhandled error in handle_voice: {e}", exc_info=True)
-        await update.message.reply_text(
-            f"Voice processing failed. Error: {str(e)}"
-        )
+        await update.message.reply_text(f"Voice processing failed. Error: {str(e)}")
+
     finally:
         if tmp_path:
             try:
                 os.remove(tmp_path)
+                logger.info(f"Temp file cleaned: {tmp_path}")
             except Exception:
                 pass
 
