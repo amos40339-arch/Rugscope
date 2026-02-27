@@ -39,7 +39,7 @@ TELEGRAM_TOKEN: str = os.environ["TELEGRAM_TOKEN"]
 GROQ_API_KEY: str = os.environ["GROQ_API_KEY"]
 PORT: int = int(os.environ.get("PORT", 8080))
 
-GROQ_MODEL = "llama-3.1-70b-versatile"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 WHISPER_MODEL = "whisper-large-v3"
 
 # ─────────────────────────────────────────────
@@ -76,11 +76,6 @@ def detect_ca(text: str) -> Optional[str]:
 # DEXSCREENER
 # ─────────────────────────────────────────────
 async def fetch_token_data(ca: str) -> dict:
-    """
-    Fetch token data from DexScreener.
-    Returns a dict with name, liquidity, price, and chart URL.
-    Raises on failure.
-    """
     url = f"https://api.dexscreener.com/latest/dex/tokens/{ca}"
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.get(url)
@@ -91,7 +86,6 @@ async def fetch_token_data(ca: str) -> dict:
     if not pairs:
         raise ValueError("No pairs found for this contract address. It may be unlisted or invalid.")
 
-    # Use the pair with the highest liquidity for signal reliability
     top_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
 
     name = top_pair.get("baseToken", {}).get("name", "Unknown")
@@ -180,7 +174,7 @@ async def query_groq(prompt: str) -> str:
     """Non-blocking Groq call wrapped in a thread executor."""
     import asyncio
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _sync_call():
         completion = groq_client.chat.completions.create(
@@ -205,7 +199,7 @@ async def transcribe_audio(file_path: str) -> str:
     """Transcribe an audio file using Groq Whisper."""
     import asyncio
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _sync_transcribe():
         with open(file_path, "rb") as audio_file:
@@ -244,7 +238,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ca = detect_ca(user_input)
 
         if ca:
-            # ── CRYPTO PATH ──
             try:
                 token_data = await fetch_token_data(ca)
             except httpx.HTTPStatusError as e:
@@ -264,7 +257,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             prompt = build_crypto_prompt(token_data)
         else:
-            # ── BUSINESS / GENERAL PATH ──
             prompt = user_input
 
         response = await query_groq(prompt)
@@ -273,14 +265,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Unhandled error in handle_text: {e}", exc_info=True)
         await update.message.reply_text(
-            "Groq AI inference failed. The model endpoint may be rate-limited or down. "
-            "Your input was not processed. Retry in 30 seconds."
+            f"Audit failed. Error: {str(e)}"
         )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Voice note from {update.effective_user.id}")
     await update.message.reply_text("Voice note received. Transcribing via Whisper.")
+
+    tmp_path = None
 
     try:
         voice = update.message.voice
@@ -319,14 +312,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Unhandled error in handle_voice: {e}", exc_info=True)
         await update.message.reply_text(
-            "Voice processing failed at the transcription or inference layer. "
-            "Check Groq API key validity and Whisper model availability."
+            f"Voice processing failed. Error: {str(e)}"
         )
     finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────
