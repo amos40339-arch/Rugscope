@@ -136,22 +136,31 @@ def extract_price(text: str) -> Optional[float]:
 
 # ─────────────────────────────────────────────
 # INTENT DETECTOR
-# NL patterns checked FIRST — CA/URL checked after.
-# This ensures "alert me when [CA]..." sets an alert
-# instead of triggering a crypto audit.
+#
+# FIXED: All .{0,N} limits audited and increased to
+# {0,120} wherever a full Solana CA (44 chars) plus
+# surrounding words could sit between two keywords.
+# This prevents long CAs from breaking pattern matches.
+#
+# Patterns checked BEFORE CA/URL hard detection so
+# "alert me when [CA]..." sets an alert instead of
+# triggering a crypto audit.
 # ─────────────────────────────────────────────
 INTENT_PATTERNS = {
+    # FIXED: {0,40} → {0,120} — CA can sit between action word and "token/this/it"
     "portfolio_add": re.compile(
-        r"\b(add|track|watch|monitor|save|include)\b.{0,40}\b(token|coin|ca|contract|this|it)\b"
-        r"|\b(add|track|watch|monitor)\b.{0,10}(portfolio|watchlist|list)\b"
-        r"|\b(put|throw|drop)\b.{0,20}(portfolio|watchlist)\b",
+        r"\b(add|track|watch|monitor|save|include)\b.{0,120}\b(token|coin|ca|contract|this|it)\b"
+        r"|\b(add|track|watch|monitor)\b.{0,120}(portfolio|watchlist|list)\b"
+        r"|\b(put|throw|drop)\b.{0,120}(portfolio|watchlist)\b",
         re.IGNORECASE
     ),
+    # FIXED: {0,40} → {0,120} — CA can sit between "remove" and "token/contract/this"
     "portfolio_remove": re.compile(
-        r"\b(remove|delete|drop|untrack|take off|get rid of)\b.{0,40}"
+        r"\b(remove|delete|drop|untrack|take off|get rid of)\b.{0,120}"
         r"\b(token|coin|ca|contract|this|it|portfolio|watchlist)\b",
         re.IGNORECASE
     ),
+    # No CA expected mid-sentence here — kept as-is, safe
     "portfolio_scan": re.compile(
         r"\b(scan|audit|check|analyze|review)\b.{0,30}"
         r"\b(portfolio|watchlist|all|my tokens|my coins|tracked)\b"
@@ -160,6 +169,7 @@ INTENT_PATTERNS = {
         r"|\bcheck (everything|all of them|my stuff)\b",
         re.IGNORECASE
     ),
+    # No CA expected — kept as-is, safe
     "portfolio_list": re.compile(
         r"\b(show|list|display|what('s| is| are)|view|see)\b.{0,30}"
         r"\b(portfolio|watchlist|tracked|my tokens|my coins)\b"
@@ -167,23 +177,29 @@ INTENT_PATTERNS = {
         r"|\bmy portfolio\b",
         re.IGNORECASE
     ),
+    # FIXED: {0,50} → {0,120} — CA sits between "alert/notify" and "when/above/below"
+    # This was the confirmed bug that caused "alert me when [CA] goes above X"
+    # to fall through to crypto_audit instead of setting an alert
     "alert_set": re.compile(
-        r"\b(alert|notify|tell|ping|warn|let me know|hit me)\b.{0,50}"
+        r"\b(alert|notify|tell|ping|warn|let me know|hit me)\b.{0,120}"
         r"\b(when|if|once|hits?|reaches?|goes?|drops?|falls?|above|below)\b"
-        r"|\bset.{0,20}(alert|notification|alarm)\b"
-        r"|\b(price|it).{0,20}(hits?|reaches?|goes? (above|below|to|over|under))\b",
+        r"|\bset.{0,120}(alert|notification|alarm)\b"
+        r"|\b(price|it).{0,120}(hits?|reaches?|goes? (above|below|to|over|under))\b",
         re.IGNORECASE
     ),
+    # No CA expected — kept as-is, safe
     "alert_list": re.compile(
         r"\b(show|list|display|what|view|see)\b.{0,30}\b(alerts?|notifications?)\b"
         r"|\bmy alerts?\b"
         r"|\bactive alerts?\b",
         re.IGNORECASE
     ),
+    # FIXED: {0,30} → {0,120} — CA can sit between "cancel" and "alert"
     "alert_cancel": re.compile(
-        r"\b(cancel|remove|delete|stop|clear|turn off)\b.{0,30}\b(alert|notification)\b",
+        r"\b(cancel|remove|delete|stop|clear|turn off)\b.{0,120}\b(alert|notification)\b",
         re.IGNORECASE
     ),
+    # No CA expected — kept as-is, safe
     "clear_memory": re.compile(
         r"\b(forget|clear|reset|wipe|delete|erase)\b.{0,30}"
         r"\b(memory|history|context|conversation|chat|everything|what we|what you)\b"
@@ -191,6 +207,7 @@ INTENT_PATTERNS = {
         r"|\bnew conversation\b",
         re.IGNORECASE
     ),
+    # Exact match only — no CA expected, safe
     "help": re.compile(
         r"^(help|what can you do|capabilities|commands|how does this work|"
         r"what do you do|who are you|sentinel|what are you)\??$",
@@ -201,26 +218,23 @@ INTENT_PATTERNS = {
 
 def detect_intent(text: str) -> str:
     """
-    NL intent patterns are checked FIRST.
+    NL intent patterns checked FIRST.
     CA and URL are fallback signals — only fire when
     no action words are present (e.g. a raw CA paste).
-    This prevents 'alert me when [CA]...' from being
-    misrouted as a crypto audit.
     """
     clean = text.strip()
 
-    # Check natural language intents first
+    # NL intents first — catches "alert me when [CA]..." correctly
     for intent, pattern in INTENT_PATTERNS.items():
         if pattern.search(clean):
             return intent
 
-    # Only after NL check — hard signal detection
+    # Hard signal fallback — raw CA or URL with no action words
     if extract_ca(clean):
         return "crypto_audit"
     if extract_url(clean):
         return "url_audit"
 
-    # Default — business idea, greeting, general
     return "general"
 
 
@@ -316,7 +330,6 @@ INPUT TYPE 1 — CRYPTO CONTRACT ADDRESS AUDIT:
 
 SENTINEL SCORE SCALE — Score based strictly on actual data. Do NOT default to 40.
 0-30:  RUG ZONE — Liquidity below $10k. Capital evaporation near-certain.
-31-60: HIGH RISK — Liquidity under $100k. Asymmetric execution risk elevated.
 31-60: HIGH RISK — Liquidity under $100k. Asymmetric execution risk elevated.
 61-85: SOLID — Liquidity above $100k, consistent volume. Structural alpha present.
 86-100: ELITE — Blue chip metrics. High holder conviction index.
