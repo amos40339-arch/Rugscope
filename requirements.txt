@@ -1,5 +1,1 @@
-python-telegram-bot
-httpx
-groq
-flask
-gunicorn
+
