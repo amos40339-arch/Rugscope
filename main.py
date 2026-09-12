@@ -46,7 +46,7 @@ TELEGRAM_TOKEN: str = os.environ["TELEGRAM_TOKEN"]
 GROQ_API_KEY: str = os.environ["GROQ_API_KEY"]
 PORT: int = int(os.environ.get("PORT", 8080))
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 WHISPER_MODEL = "whisper-large-v3"
 RATE_LIMIT_SECONDS = 15
 MAX_MEMORY_EXCHANGES = 3
