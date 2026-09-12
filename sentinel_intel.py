@@ -35,13 +35,23 @@ GECKOTERMINAL_NETWORK_MAP = {
     "polygon": "polygon_pos",
     "arbitrum": "arbitrum",
     "avalanche": "avax",
+    "robinhood": "robinhood",
 }
 
-# DexScreener chainId string -> Blockscout chain_id (numeric, used in api.blockscout.com/{chain_id}/...)
+# DexScreener chainId string -> Blockscout chain_id (numeric, used in the
+# unified api.blockscout.com/{chain_id}/... Pro API).
 BLOCKSCOUT_CHAIN_ID_MAP = {
     "ethereum": 1,
     "bsc": 56,
     "base": 8453,
+    "robinhood": 4663,
+}
+
+# Some chains (especially very new ones) may not be onboarded to the unified
+# Pro API yet but do run their own free public Blockscout instance. List
+# those as a fallback base URL, tried if the unified endpoint 404s.
+BLOCKSCOUT_INSTANCE_FALLBACK = {
+    "robinhood": "https://robinhoodchain.blockscout.com",
 }
 
 
@@ -138,57 +148,71 @@ async def fetch_token_history(ca: str, chain: str) -> dict:
 # ─────────────────────────────────────────────
 # 3. HOLDER CONCENTRATION — EVM chains via Blockscout Pro API
 # ─────────────────────────────────────────────
+async def _blockscout_holders_from_base(base_url: str, ca: str, use_key: bool) -> Optional[dict]:
+    """
+    Tries to pull holders + total supply from a given Blockscout base URL
+    (either the unified api.blockscout.com/{chain_id} or a dedicated
+    per-chain instance like robinhoodchain.blockscout.com).
+    Returns None on failure so the caller can try a fallback; raises nothing.
+    """
+    params = {"apikey": BLOCKSCOUT_API_KEY} if (use_key and BLOCKSCOUT_API_KEY) else {}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        holders_resp = await client.get(f"{base_url}/api/v2/tokens/{ca}/holders", params=params)
+        if holders_resp.status_code != 200:
+            return None
+        holders = holders_resp.json().get("items", [])
+        if not holders:
+            return None
+
+        total_supply = None
+        info_resp = await client.get(f"{base_url}/api/v2/tokens/{ca}", params=params)
+        if info_resp.status_code == 200:
+            total_supply = info_resp.json().get("total_supply")
+
+    top_10_balance = sum(float(h.get("value", 0) or 0) for h in holders[:10])
+    concentration_pct = None
+    if total_supply:
+        try:
+            concentration_pct = round((top_10_balance / float(total_supply)) * 100, 2)
+        except (ValueError, ZeroDivisionError):
+            concentration_pct = None
+
+    return {
+        "available": True,
+        "holder_count_sampled": len(holders),
+        "top_10_holder_concentration_pct": concentration_pct,
+    }
+
+
 async def fetch_evm_holder_data(ca: str, chain: str) -> dict:
     """
-    Uses Blockscout's unified Pro API (one key, many chains) to pull
-    top holder concentration for ERC-20 tokens.
+    Uses Blockscout to pull top holder concentration for ERC-20 tokens.
+    Tries the unified Pro API (one key, many chains) first; if that chain
+    isn't onboarded there yet, falls back to a dedicated per-chain
+    Blockscout instance if one is known (see BLOCKSCOUT_INSTANCE_FALLBACK).
     """
-    chain_id = BLOCKSCOUT_CHAIN_ID_MAP.get(chain.lower())
-    if not chain_id:
-        return {"available": False, "reason": f"No Blockscout mapping for chain '{chain}'."}
-
-    if not BLOCKSCOUT_API_KEY:
-        return {"available": False, "reason": "BLOCKSCOUT_API_KEY not configured."}
+    chain_key = chain.lower()
+    chain_id = BLOCKSCOUT_CHAIN_ID_MAP.get(chain_key)
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            url = f"https://api.blockscout.com/{chain_id}/api/v2/tokens/{ca}/holders"
-            resp = await client.get(url, params={"apikey": BLOCKSCOUT_API_KEY})
-            resp.raise_for_status()
-            data = resp.json()
+        if chain_id:
+            result = await _blockscout_holders_from_base(
+                f"https://api.blockscout.com/{chain_id}", ca, use_key=True
+            )
+            if result:
+                return result
 
-        holders = data.get("items", [])
-        if not holders:
-            return {"available": False, "reason": "No holder data returned."}
+        fallback_base = BLOCKSCOUT_INSTANCE_FALLBACK.get(chain_key)
+        if fallback_base:
+            result = await _blockscout_holders_from_base(fallback_base, ca, use_key=False)
+            if result:
+                return result
 
-        # Compute concentration in top 10 wallets vs total supply if fields present
-        total_supply = None
-        token_info_url = f"https://api.blockscout.com/{chain_id}/api/v2/tokens/{ca}"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp2 = await client.get(token_info_url, params={"apikey": BLOCKSCOUT_API_KEY})
-            if resp2.status_code == 200:
-                total_supply = resp2.json().get("total_supply")
+        if not chain_id and not fallback_base:
+            return {"available": False, "reason": f"No Blockscout mapping for chain '{chain}'."}
 
-        top_10_balance = sum(
-            float(h.get("value", 0) or 0) for h in holders[:10]
-        )
+        return {"available": False, "reason": "Blockscout returned no holder data from any known endpoint."}
 
-        concentration_pct = None
-        if total_supply:
-            try:
-                concentration_pct = round((top_10_balance / float(total_supply)) * 100, 2)
-            except (ValueError, ZeroDivisionError):
-                concentration_pct = None
-
-        return {
-            "available": True,
-            "holder_count_sampled": len(holders),
-            "top_10_holder_concentration_pct": concentration_pct,
-        }
-
-    except httpx.HTTPStatusError as e:
-        logger.warning(f"Blockscout HTTP error for {ca}: {e}")
-        return {"available": False, "reason": f"Blockscout returned HTTP {e.response.status_code}."}
     except httpx.RequestError as e:
         logger.warning(f"Blockscout request error for {ca}: {e}")
         return {"available": False, "reason": "Blockscout unreachable."}
