@@ -77,16 +77,25 @@ def get_reply_context(update: Update) -> str:
 # ─────────────────────────────────────────────
 async def fetch_token_history(ca: str, chain: str) -> dict:
     """
-    Pulls daily OHLCV candles for the token's top pool since pool creation.
-    Returns a dict describing the trend, or {"available": False, "reason": ...}
+    Pulls pool data for the token and, where available, daily OHLCV candles
+    for its highest-liquidity pool. Falls back to short-term price-change
+    data already present on the pool object if OHLCV candles aren't
+    populated yet (common on brand-new chains). Also flags pool
+    proliferation — many near-empty decoy pools around one real pool is a
+    manipulation/noise signal worth surfacing on its own.
     """
     network = GECKOTERMINAL_NETWORK_MAP.get(chain.lower())
     if not network:
         return {"available": False, "reason": f"No historical data source mapped for chain '{chain}'."}
 
+    def reserve_usd(pool: dict) -> float:
+        try:
+            return float((pool.get("attributes") or {}).get("reserve_in_usd") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            # Find the token's highest-liquidity pool
             pools_url = f"https://api.geckoterminal.com/api/v2/networks/{network}/tokens/{ca}/pools"
             resp = await client.get(pools_url)
             resp.raise_for_status()
@@ -95,44 +104,55 @@ async def fetch_token_history(ca: str, chain: str) -> dict:
             if not pools_data:
                 return {"available": False, "reason": "No pools found on GeckoTerminal for this token."}
 
-            top_pool = max(
-                pools_data,
-                key=lambda p: float((p.get("attributes") or {}).get("reserve_in_usd") or 0),
-            )
-            pool_address = top_pool["attributes"]["address"]
+            pools_sorted = sorted(pools_data, key=reserve_usd, reverse=True)
+            top_pool = pools_sorted[0]
+            top_attrs = top_pool.get("attributes", {})
+            pool_address = top_attrs.get("address")
 
-            # Daily candles for the lifetime of the pool
-            ohlcv_url = f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/day"
-            resp = await client.get(ohlcv_url, params={"aggregate": 1, "limit": 1000})
-            resp.raise_for_status()
-            candles = (
-                resp.json().get("data", {}).get("attributes", {}).get("ohlcv_list", [])
-            )
+            # Pool proliferation / decoy-pool signal.
+            total_pools = len(pools_data)
+            decoy_pools = sum(1 for p in pools_data if reserve_usd(p) < 100)
+            earliest_pool_ts = None
+            for p in pools_data:
+                ts = (p.get("attributes") or {}).get("pool_created_at")
+                if ts and (earliest_pool_ts is None or ts < earliest_pool_ts):
+                    earliest_pool_ts = ts
 
-        if not candles:
-            return {"available": False, "reason": "No historical candle data returned."}
+            result = {
+                "available": True,
+                "top_pool_liquidity_usd": reserve_usd(top_pool),
+                "top_pool_created_at": top_attrs.get("pool_created_at"),
+                "earliest_known_pool_created_at": earliest_pool_ts,
+                "total_pools_found": total_pools,
+                "low_liquidity_decoy_pools": decoy_pools,
+                "short_term_price_change_pct": top_attrs.get("price_change_percentage", {}),
+                "candle_history": None,  # filled in below if available
+            }
 
-        # Each candle: [unix_timestamp, open, high, low, close, volume]
-        candles.sort(key=lambda c: c[0])
-        first_close = candles[0][4]
-        last_close = candles[-1][4]
-        all_time_high = max(c[2] for c in candles)
-        all_time_low = min(c[3] for c in candles)
-        days_tracked = len(candles)
+            if pool_address:
+                ohlcv_url = f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/day"
+                ohlcv_resp = await client.get(ohlcv_url, params={"aggregate": 1, "limit": 1000})
+                if ohlcv_resp.status_code == 200:
+                    candles = (
+                        ohlcv_resp.json().get("data", {}).get("attributes", {}).get("ohlcv_list", [])
+                    )
+                    if candles:
+                        candles.sort(key=lambda c: c[0])
+                        first_close = candles[0][4]
+                        last_close = candles[-1][4]
+                        pct_change = None
+                        if first_close:
+                            pct_change = round(((last_close - first_close) / first_close) * 100, 2)
+                        result["candle_history"] = {
+                            "days_of_candle_data": len(candles),
+                            "earliest_tracked_price": first_close,
+                            "latest_tracked_price": last_close,
+                            "all_time_high": max(c[2] for c in candles),
+                            "all_time_low": min(c[3] for c in candles),
+                            "pct_change_since_earliest_data": pct_change,
+                        }
 
-        pct_change = None
-        if first_close:
-            pct_change = round(((last_close - first_close) / first_close) * 100, 2)
-
-        return {
-            "available": True,
-            "days_of_data": days_tracked,
-            "earliest_tracked_price": first_close,
-            "latest_tracked_price": last_close,
-            "all_time_high": all_time_high,
-            "all_time_low": all_time_low,
-            "pct_change_since_earliest_data": pct_change,
-        }
+            return result
 
     except httpx.HTTPStatusError as e:
         logger.warning(f"GeckoTerminal HTTP error for {ca}: {e}")
@@ -297,12 +317,49 @@ def format_deep_intel_for_prompt(intel: dict) -> str:
     history = intel.get("history", {})
     if history.get("available"):
         lines.append(
-            f"- Historical data: {history['days_of_data']} days tracked. "
-            f"Earliest tracked price ${history['earliest_tracked_price']}, "
-            f"current tracked price ${history['latest_tracked_price']}. "
-            f"All-time high ${history['all_time_high']}, all-time low ${history['all_time_low']}. "
-            f"Change since earliest tracked data: {history['pct_change_since_earliest_data']}%."
+            f"- Top pool liquidity: ${history['top_pool_liquidity_usd']:,.2f}, "
+            f"created {history.get('top_pool_created_at', 'unknown date')}."
         )
+        if history.get("earliest_known_pool_created_at"):
+            lines.append(
+                f"- Earliest known pool for this token created "
+                f"{history['earliest_known_pool_created_at']} (approximate on-chain age)."
+            )
+
+        total_pools = history.get("total_pools_found", 0)
+        decoy_pools = history.get("low_liquidity_decoy_pools", 0)
+        if total_pools > 1:
+            if decoy_pools >= total_pools - 1 and decoy_pools >= 3:
+                lines.append(
+                    f"- Pool proliferation flag: {total_pools} pools found, {decoy_pools} of them "
+                    f"near-empty (<$100 liquidity) with no real trading activity. Only one pool "
+                    f"carries real volume. Pattern consistent with decoy/spam pool creation — "
+                    f"treat as a manipulation or noise signal, not necessarily a scam indicator "
+                    f"on its own."
+                )
+            else:
+                lines.append(f"- {total_pools} pools found for this token, {decoy_pools} of them low-liquidity.")
+
+        candle = history.get("candle_history")
+        if candle:
+            lines.append(
+                f"- Historical daily candles: {candle['days_of_candle_data']} days tracked. "
+                f"Earliest tracked price ${candle['earliest_tracked_price']}, "
+                f"current tracked price ${candle['latest_tracked_price']}. "
+                f"All-time high ${candle['all_time_high']}, all-time low ${candle['all_time_low']}. "
+                f"Change since earliest tracked data: {candle['pct_change_since_earliest_data']}%."
+            )
+        else:
+            short_term = history.get("short_term_price_change_pct") or {}
+            if short_term:
+                lines.append(
+                    f"- Daily candle history not yet populated for this chain/pool. "
+                    f"Short-term price change available instead: "
+                    f"1h {short_term.get('h1', 'N/A')}%, 6h {short_term.get('h6', 'N/A')}%, "
+                    f"24h {short_term.get('h24', 'N/A')}%."
+                )
+            else:
+                lines.append("- No historical or short-term trend data available for this pool.")
     else:
         lines.append(f"- Historical data: unavailable ({history.get('reason', 'unknown')}).")
 
