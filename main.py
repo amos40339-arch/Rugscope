@@ -333,8 +333,11 @@ INPUT TYPE 1 — CRYPTO CONTRACT ADDRESS AUDIT:
 
 If DEEP INTELLIGENCE DATA is present in the input, factor holder concentration into
 Exit Liquidity Concentration and factor historical price trend into Structural Alpha
-Decay. If a data point is marked unavailable, state that plainly in the audit rather
-than inventing a number.
+Decay. If a pool proliferation flag is present (many near-empty decoy pools around one
+real pool), treat it as a manipulation/noise signal under Neural Sentiment Gap — it is
+not automatic proof of a scam, but it lowers confidence and should be named explicitly.
+If a data point is marked unavailable, state that plainly in the audit rather than
+inventing a number.
 
 SENTINEL SCORE SCALE — Score based strictly on actual data. Do NOT default to 40.
 0-30:  RUG ZONE — Liquidity below $10k. Capital evaporation near-certain.
